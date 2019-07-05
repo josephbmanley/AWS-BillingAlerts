@@ -1,0 +1,44 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: 'Top level stack for Command Relay API resources'
+Parameters:
+  cloudToolsBucket:
+    Type: String
+    Description: 'S3 Bucket containing Cloud Tools'
+  environment:
+    Type: String
+    Description: 'Environment'
+  release:
+    Type: String
+    Description: 'Release'
+    Default: 'develop'
+  notificationDiscordId:
+    Type: String
+    Description: 'Username of discord user to notify'
+  notificationEmail:
+    Type: String
+    Description: 'Email of to send SNS notifications to'
+
+Resources:
+
+    
+  NotifyDiscord:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.6
+      # CodeUri:
+      #   Bucket: !Ref CloudToolsBucket
+      #   Key: !Ref TicketsArchive
+      FunctionName: !Sub "BillingBot-${Environment}-FnNotifyDiscord"
+      Description: 'Lambda receives API Gateway requests and generates tickets in FreshDesk.'
+      MemorySize: 128
+      Timeout: 10
+      #Role: !GetAtt CommandRelayIAM.Outputs.TicketsRoleArn
+      Environment:
+        Variables:
+          region: !Ref 'AWS::Region'
+          discordId: !Ref NotificationDiscordId
+
+    #CloudWatch CRON
+    #CloudWatch Billing Limit (3 Tiers (Low Priority, Medium Priority, High Priority))
