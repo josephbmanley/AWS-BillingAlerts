@@ -1,44 +1,262 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: 'AWS::Serverless-2016-10-31'
-Description: 'Top level stack for Command Relay API resources'
+AWSTemplateFormatVersion: 2010-09-09
+Description: Stack that sends out billing alerts 
 Parameters:
-  cloudToolsBucket:
-    Type: String
-    Description: 'S3 Bucket containing Cloud Tools'
+  #------------------------
+  # Deployment Information
+  #------------------------
   environment:
     Type: String
-    Description: 'Environment'
+    Description: Name of the environment to use in naming.
+    Default: production
   release:
     Type: String
-    Description: 'Release'
-    Default: 'develop'
-  notificationDiscordId:
+    Description: Name of the release name of the stack version to use.
+    Default: production
+    AllowedValues: ['develop', 'production']
+    ConstraintDescription: "Must be a possible release version."
+
+
+  #---------------
+  # Alert Methods
+  #---------------
+  discordWebhook:
     Type: String
-    Description: 'Username of discord user to notify'
+    Description: A webhook for notifications for Discord. (Leave empty for none)
+    Default: ""
+  slackWebhook:
+    Type: String
+    Description: An incoming webhook for notifications for Slack. (Leave empty for none)
+    Default: ""
   notificationEmail:
     Type: String
-    Description: 'Email of to send SNS notifications to'
+    Description: An email address to subscribe to the alerting topic. (Leave empty for none)
+    Default: ""
+  notificationPhone:
+    Type: String
+    Description: A mobile number to subscribe to the alerting topic. Formatted as '+1XXXXXXXXXX' (Leave empty for none)
+    Default: ""
+
+
+  #-------------------
+  # Alarm Information
+  #-------------------
+  lowPriorityAlert:
+    Type: Number
+    Description: Estimated monthly cost in USD to send a low priority alert.
+    Default: 10
+    MinValue: 1
+  mediumPriorityAlert:
+    Type: Number
+    Description: Estimated monthly cost in USD to send a normal alert.
+    Default: 15
+    MinValue: 2
+  highPriorityAlert:
+    Type: Number
+    Description: Estimated monthly cost in USD to send a low priority alert.
+    Default: 20
+    MinValue: 3
+
+  updateInterval:
+    Type: Number
+    Description: Time in seconds alarms are updated.
+    Default: 21600 # 6 hours
+    ConstraintDescription: Minimum alarm time is a minute.
+    MinValue: 60
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: "Deployment Information"
+      Parameters:
+      - environment
+      - release
+    - Label:
+        default: "Alert Methods"
+      Parameters:
+      - notificationEmail
+      - notificationPhone
+      - discordWebhook
+      - slackWebhook
+    - Label:
+        default: "Alarm Settings"
+      Parameters:
+      - lowPriorityAlert
+      - mediumPriorityAlert
+      - highPriorityAlert
+    ParameterLabels:
+      environment:
+        default: "Environment"
+      release:
+        default: "Release"
+      notificationEmail:
+        default: "Email"
+      notificationPhone:
+        default: "SMS Number"
+      discordWebhook:
+        default: "Discord Webhook"
+      slackWebhook:
+        default: "Slack Webhook"
+      lowPriorityAlert:
+        Default: "Cost for Low Priority Alert"
+      mediumPriorityAlert:
+        Default: "Cost for Medium Priority Alert"
+      highPriorityAlert:
+        Default: "Cost for High Priority Alert"
+
+Conditions:
+  SubscribeEmail: !Not [!Equals [!Ref "notificationEmail", ""]]
+  SubscribePhone: !Not [!Equals [!Ref "notificationPhone", ""]]
 
 Resources:
 
-    
-  NotifyDiscord:
-    Type: 'AWS::Serverless::Function'
+  AlertSnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "BillingAlerts-${environment}"
+
+  EmailAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: SubscribeEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref notificationEmail
+      TopicArn: !Ref AlertSnsTopic
+
+  PhoneAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: SubscribePhone
+    Properties:
+      Protocol: sms
+      Endpoint: !Ref notificationPhone
+      TopicArn: !Ref AlertSnsTopic
+
+  AlertExecutionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement: 
+          - Effect: Allow
+            Principal: 
+              Service: 
+                - lambda.amazonaws.com
+            Action: 
+              - sts:AssumeRole
+      Policies: 
+        - PolicyName: LambdaLogging
+          PolicyDocument: 
+            Version: 2012-10-17
+            Statement: 
+              - Effect: Allow
+                Action: 
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+        - PolicyName: AlertSNS
+          PolicyDocument: 
+            Version: 2012-10-17
+            Statement: 
+              - Effect: Allow
+                Action: 
+                  - sns:Publish
+                Resource: !Ref AlertSnsTopic
+
+
+  AlertHandler:
+    Type: AWS::Lambda::Function
     Properties:
       Handler: lambda_function.lambda_handler
       Runtime: python3.6
-      # CodeUri:
-      #   Bucket: !Ref CloudToolsBucket
-      #   Key: !Ref TicketsArchive
-      FunctionName: !Sub "BillingBot-${Environment}-FnNotifyDiscord"
-      Description: 'Lambda receives API Gateway requests and generates tickets in FreshDesk.'
+      Code:
+        S3Bucket: "sumu-billingalerts"
+        S3Key: !Sub "${release}/lambda/alertHandler.zip"
+      FunctionName: !Sub "FnAlert-${environment}"
+      Description: Lambda receives CloudWatch events and alerts channels.
       MemorySize: 128
       Timeout: 10
-      #Role: !GetAtt CommandRelayIAM.Outputs.TicketsRoleArn
+      Role: !GetAtt AlertExecutionerRole.Arn
       Environment:
         Variables:
-          region: !Ref 'AWS::Region'
-          discordId: !Ref NotificationDiscordId
+          discordWebhook: !Ref discordWebhook
+          slackWebhook: !Ref slackWebhook
+          snsTopic: !Ref AlertSnsTopic
 
-    #CloudWatch CRON
-    #CloudWatch Billing Limit (3 Tiers (Low Priority, Medium Priority, High Priority))
+
+  CloudWatchReciever:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "Billing-CloudWatch-${environment}"
+
+  CloudWatchAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      Endpoint: !GetAtt AlertHandler.Arn
+      TopicArn: !Ref CloudWatchReciever
+  
+  SnsLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref CloudWatchReciever
+      FunctionName: !GetAtt AlertHandler.Arn
+
+  LowPriorityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref CloudWatchReciever
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      EvaluationPeriods: 1
+      MetricName: EstimatedCharges
+      Namespace: "AWS/Billing"
+      OKActions:
+        - !Ref CloudWatchReciever
+      Period: !Ref updateInterval
+      Statistic: Maximum
+      Threshold: !Ref lowPriorityAlert
+
+  MediumPriorityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref CloudWatchReciever
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      EvaluationPeriods: 1
+      MetricName: EstimatedCharges
+      Namespace: "AWS/Billing"
+      OKActions:
+        - !Ref CloudWatchReciever
+      Period: !Ref updateInterval
+      Statistic: Maximum
+      Threshold: !Ref mediumPriorityAlert
+
+  HighPriorityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref CloudWatchReciever
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      EvaluationPeriods: 1
+      MetricName: EstimatedCharges
+      Namespace: "AWS/Billing"
+      OKActions:
+        - !Ref CloudWatchReciever
+      Period: !Ref updateInterval
+      Statistic: Maximum
+      Threshold: !Ref highPriorityAlert
