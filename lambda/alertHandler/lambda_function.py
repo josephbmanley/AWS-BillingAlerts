@@ -61,10 +61,3 @@ def send_message(message, name = None, high_priority = False):
     send_discord_message(message, name, high_priority)
     send_slack_message(message, name, high_priority)
     send_sns_message(message, name, high_priority)
-
-
-# os.environ['snsTopic'] = "arn:aws:sns:us-east-1:959431236163:BillingDev"
-# os.environ['slackWebhook'] = "https://hooks.slack.com/services/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"
-# os.environ['discordWebhook'] = "https://discordapp.com/api/webhooks/597128213373648900/Ys4iB0MCeJiwne_KSJIE_Q8geZluKsFYzQQ02GJIMp2fGka1-tx47ZmH0aTxbGVz6fJ6"
-
-# send_message("Test", "AWS Billing", True)
